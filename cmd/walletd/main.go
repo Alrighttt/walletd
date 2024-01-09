@@ -9,6 +9,8 @@ import (
 	"os/signal"
 	"runtime/debug"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"golang.org/x/term"
 )
 
@@ -78,7 +80,26 @@ func main() {
 		log.Fatal(err)
 	}
 
-	n, err := newNode(*gatewayAddr, *dir, *network, *upnp)
+	// configure console logging note: this is configured before anything else
+	// to have consistent logging. File logging will be added after the cli
+	// flags and config is parsed
+	consoleCfg := zap.NewProductionEncoderConfig()
+	consoleCfg.TimeKey = "" // prevent duplicate timestamps
+	consoleCfg.EncodeTime = zapcore.RFC3339TimeEncoder
+	consoleCfg.EncodeDuration = zapcore.StringDurationEncoder
+	consoleCfg.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	consoleCfg.StacktraceKey = ""
+	consoleCfg.CallerKey = ""
+	consoleEncoder := zapcore.NewConsoleEncoder(consoleCfg)
+
+	// only log info messages to console unless stdout logging is enabled
+	consoleCore := zapcore.NewCore(consoleEncoder, zapcore.Lock(os.Stdout), zap.NewAtomicLevelAt(zap.InfoLevel))
+	logger := zap.New(consoleCore, zap.AddCaller())
+	defer logger.Sync()
+	// redirect stdlib log to zap
+	zap.RedirectStdLog(logger.Named("stdlib"))
+
+	n, err := newNode(*gatewayAddr, *dir, *network, *upnp, logger)
 	if err != nil {
 		log.Fatal(err)
 	}
