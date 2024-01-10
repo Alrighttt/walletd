@@ -99,6 +99,10 @@ func main() {
 	// redirect stdlib log to zap
 	zap.RedirectStdLog(logger.Named("stdlib"))
 
+	if err := os.MkdirAll(*dir, 0700); err != nil {
+		log.Fatal(err)
+	}
+
 	n, err := newNode(*gatewayAddr, *dir, *network, *upnp, logger)
 	if err != nil {
 		log.Fatal(err)
