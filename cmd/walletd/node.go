@@ -121,6 +121,7 @@ func newNode(addr, dir string, chainNetwork string, useUPNP bool) (*node, error)
 		network, genesisBlock = TestnetAnagami()
 		bootstrapPeers = anagamiBootstrap
 		testnetFixDBTree(dir)
+		testnetFixMultiproofs(dir)
 	default:
 		return nil, errors.New("invalid network: must be one of 'mainnet', 'zen', or 'anagami'")
 	}
