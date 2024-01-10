@@ -52,7 +52,7 @@ func TestnetAnagami() (*consensus.Network, types.Block) {
 	n.HardforkFoundation.PrimaryAddress, _ = types.ParseAddress("addr:5949fdf56a7c18ba27f6526f22fd560526ce02a1bd4fa3104938ab744b69cf63b6b734b8341f")
 	n.HardforkFoundation.FailsafeAddress = n.HardforkFoundation.PrimaryAddress
 
-	n.HardforkV2.AllowHeight = 2016         // ~2 weeks in
+	n.HardforkV2.AllowHeight = 375          // ~2 weeks in Alright FIXME
 	n.HardforkV2.RequireHeight = 2016 + 288 // ~2 days later
 
 	b := types.Block{
