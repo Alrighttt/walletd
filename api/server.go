@@ -131,6 +131,15 @@ func (s *server) syncerBroadcastBlockHandler(jc jape.Context) {
 	}
 }
 
+func (s *server) utilsGenerateAddress(jc jape.Context) {
+	var b types.SpendPolicy
+	if jc.Decode(&b) != nil {
+		return
+	}
+
+	jc.Encode(b.Address().String())
+}
+
 func (s *server) txpoolTransactionsHandler(jc jape.Context) {
 	jc.Encode(TxpoolTransactionsResponse{
 		Transactions:   s.cm.PoolTransactions(),
@@ -539,5 +548,7 @@ func NewServer(cm ChainManager, s Syncer, wm WalletManager) http.Handler {
 		"POST   /wallets/:name/release":         srv.walletsReleaseHandler,
 		"POST   /wallets/:name/fund":            srv.walletsFundHandler,
 		"POST   /wallets/:name/fundsf":          srv.walletsFundSFHandler,
+
+		"POST   /utils/generateaddress/": srv.utilsGenerateAddress,
 	})
 }
