@@ -15,7 +15,7 @@ import (
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/gateway"
 	"go.sia.tech/core/types"
-	"go.sia.tech/walletd/syncer"
+	"go.sia.tech/coreutils/syncer"
 	"go.sia.tech/walletd/wallet"
 )
 
@@ -129,6 +129,15 @@ func (s *server) syncerBroadcastBlockHandler(jc jape.Context) {
 	} else {
 		s.s.BroadcastV2BlockOutline(gateway.OutlineBlock(b, s.cm.PoolTransactions(), s.cm.V2PoolTransactions()))
 	}
+}
+
+func (s *server) utilsGenerateAddress(jc jape.Context) {
+	var b types.SpendPolicy
+	if jc.Decode(&b) != nil {
+		return
+	}
+
+	jc.Encode(b.Address().String())
 }
 
 func (s *server) txpoolTransactionsHandler(jc jape.Context) {
@@ -539,5 +548,7 @@ func NewServer(cm ChainManager, s Syncer, wm WalletManager) http.Handler {
 		"POST   /wallets/:name/release":         srv.walletsReleaseHandler,
 		"POST   /wallets/:name/fund":            srv.walletsFundHandler,
 		"POST   /wallets/:name/fundsf":          srv.walletsFundSFHandler,
+
+		"POST   /utils/generateaddress/": srv.utilsGenerateAddress,
 	})
 }
