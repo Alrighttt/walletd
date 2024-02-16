@@ -29,4 +29,4 @@ EXPOSE 9981/tcp
 
 USER ${PUID}:${PGID}
 
-ENTRYPOINT [ "walletd", "-network=anagami","--dir", "/data", "--http", ":9980" ]
+ENTRYPOINT [ "walletd", "-network=komodo","--dir", "/data", "--http", ":9980" ]
