@@ -36,6 +36,10 @@ var anagamiBootstrap = []string{
 	"1.1.1.1:9981",
 }
 
+var komodoBootstrap = []string{
+	"195.201.20.230:9981",
+}
+
 type node struct {
 	cm *chain.Manager
 	s  *syncer.Syncer
@@ -58,6 +62,9 @@ func newNode(addr, dir string, chainNetwork string, useUPNP bool) (*node, error)
 	case "anagami":
 		network, genesisBlock = TestnetAnagami()
 		bootstrapPeers = anagamiBootstrap
+	case "komodo":
+		network, genesisBlock = TestnetKomodo()
+		bootstrapPeers = komodoBootstrap
 	default:
 		return nil, errors.New("invalid network: must be one of 'mainnet', 'zen', or 'anagami'")
 	}

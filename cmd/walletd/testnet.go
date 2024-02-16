@@ -49,8 +49,59 @@ func TestnetAnagami() (*consensus.Network, types.Block) {
 	n.HardforkFoundation.PrimaryAddress, _ = types.ParseAddress("addr:5949fdf56a7c18ba27f6526f22fd560526ce02a1bd4fa3104938ab744b69cf63b6b734b8341f")
 	n.HardforkFoundation.FailsafeAddress = n.HardforkFoundation.PrimaryAddress
 
-	n.HardforkV2.AllowHeight = 10          // ~2 weeks in Alright FIXME
+	n.HardforkV2.AllowHeight = 10           // ~2 weeks in Alright FIXME
 	n.HardforkV2.RequireHeight = 2016 + 288 // ~2 days later
+
+	b := types.Block{
+		Timestamp: n.HardforkOak.GenesisTimestamp,
+		Transactions: []types.Transaction{{
+			SiacoinOutputs: []types.SiacoinOutput{{
+				Address: n.HardforkFoundation.PrimaryAddress,
+				Value:   types.Siacoins(1).Mul64(1e12),
+			}},
+			SiafundOutputs: []types.SiafundOutput{{
+				Address: n.HardforkFoundation.PrimaryAddress,
+				Value:   10000,
+			}},
+		}},
+	}
+
+	return n, b
+}
+
+// TestnetAnagami returns the chain parameters and genesis block for the "Anagami"
+// testnet chain.
+func TestnetKomodo() (*consensus.Network, types.Block) {
+	n := &consensus.Network{
+		Name: "komodo",
+
+		InitialCoinbase: types.Siacoins(300000),
+		MinimumCoinbase: types.Siacoins(300000),
+		InitialTarget:   types.BlockID{0: 1},
+	}
+
+	n.HardforkDevAddr.Height = 1
+	n.HardforkDevAddr.OldAddress = types.Address{}
+	n.HardforkDevAddr.NewAddress = types.Address{}
+
+	n.HardforkTax.Height = 2
+
+	n.HardforkStorageProof.Height = 3
+
+	n.HardforkOak.Height = 5
+	n.HardforkOak.FixHeight = 8
+	n.HardforkOak.GenesisTimestamp = time.Unix(1702300000, 0) // Dec 11, 2023 @ 13:06 GMT
+
+	n.HardforkASIC.Height = 13
+	n.HardforkASIC.OakTime = 10 * time.Minute
+	n.HardforkASIC.OakTarget = n.InitialTarget
+
+	n.HardforkFoundation.Height = 21
+	n.HardforkFoundation.PrimaryAddress, _ = types.ParseAddress("addr:5949fdf56a7c18ba27f6526f22fd560526ce02a1bd4fa3104938ab744b69cf63b6b734b8341f")
+	n.HardforkFoundation.FailsafeAddress = n.HardforkFoundation.PrimaryAddress
+
+	n.HardforkV2.AllowHeight = 10        // activate immediately
+	n.HardforkV2.RequireHeight = 7777777 // remain in flux v1/v2 transition indefinitely
 
 	b := types.Block{
 		Timestamp: n.HardforkOak.GenesisTimestamp,
@@ -149,7 +200,7 @@ func mineBlock(cs consensus.State, b *types.Block) (hashes int, found bool) {
 	return hashes, true
 }
 
-func runTestnetMiner(c *api.Client, seed wallet.Seed) {
+func runTestnetMiner(c *api.Client, seed wallet.Seed, count int) {
 	minerAddr := types.StandardUnlockHash(seed.PublicKey(0))
 	log.Println("Started mining into", minerAddr)
 	start := time.Now()
@@ -157,6 +208,8 @@ func runTestnetMiner(c *api.Client, seed wallet.Seed) {
 	var hashes float64
 	var blocks uint64
 	var last types.ChainIndex
+	var minedCount int
+	minedCount = 0
 outer:
 	for {
 		elapsed := time.Since(start)
@@ -209,9 +262,14 @@ outer:
 		} else if err := c.SyncerBroadcastBlock(b); err != nil {
 			fmt.Printf("\nMined invalid block: %v\n", err)
 		} else if b.V2 == nil {
-			fmt.Printf("\nFound v1 block %v\n", index)
+			minedCount += 1
+			fmt.Printf("\nFound v1 block %v count:%d\n", index, minedCount)
 		} else {
-			fmt.Printf("\nFound v2 block %v\n", index)
+			minedCount += 1
+			fmt.Printf("\nFound v2 block %v count:%d\n", index, minedCount)
+		}
+		if minedCount > count {
+			break outer
 		}
 	}
 }
