@@ -64,6 +64,112 @@ func TestnetAnagami() (*consensus.Network, types.Block) {
 	return n, b
 }
 
+// TestnetAnagami returns the chain parameters and genesis block for the "Anagami"
+// testnet chain.
+func TestnetKomodo() (*consensus.Network, types.Block) {
+	n := &consensus.Network{
+		Name: "komodo",
+
+		InitialCoinbase: types.Siacoins(300000),
+		MinimumCoinbase: types.Siacoins(300000),
+		InitialTarget:   types.BlockID{0: 1}, // significantly reduced POW diff
+	}
+
+	n.HardforkDevAddr.Height = 1
+	n.HardforkDevAddr.OldAddress = types.Address{}
+	n.HardforkDevAddr.NewAddress = types.Address{}
+
+	n.HardforkTax.Height = 2
+
+	n.HardforkStorageProof.Height = 3
+
+	n.HardforkOak.Height = 5
+	n.HardforkOak.FixHeight = 8
+	n.HardforkOak.GenesisTimestamp = time.Unix(1702300000, 0) // Dec 11, 2023 @ 13:06 GMT
+
+	n.HardforkASIC.Height = 13
+	n.HardforkASIC.OakTime = 10 * time.Minute
+	n.HardforkASIC.OakTarget = n.InitialTarget
+
+	n.HardforkFoundation.Height = 21
+	n.HardforkFoundation.PrimaryAddress, _ = types.ParseAddress("addr:591fcf237f8854b5653d1ac84ae4c107b37f148c3c7b413f292d48db0c25a8840be0653e411f") // Address controlled by Alrighttt
+	n.HardforkFoundation.FailsafeAddress = n.HardforkFoundation.PrimaryAddress
+
+	n.HardforkV2.AllowHeight = 10        // activate immediately
+	n.HardforkV2.RequireHeight = 7777777 // remain in flux state v1/v2 transition indefinitely
+
+	b := types.Block{
+		Timestamp: n.HardforkOak.GenesisTimestamp,
+		Transactions: []types.Transaction{{
+			SiacoinOutputs: []types.SiacoinOutput{{
+				Address: n.HardforkFoundation.PrimaryAddress,
+				Value:   types.Siacoins(1).Mul64(1e12),
+			}},
+			SiafundOutputs: []types.SiafundOutput{{
+				Address: n.HardforkFoundation.PrimaryAddress,
+				Value:   10000,
+			}},
+		}},
+	}
+
+	return n, b
+}
+
+func loadTestnetSeed(s string) wallet.Seed {
+	if s == "" {
+		fmt.Println("Seed not supplied via -seed flag, falling back to manual entry.")
+		fmt.Print("Seed: ")
+		pw, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		check("Could not read API password:", err)
+		if err != nil {
+			log.Fatal(err)
+		}
+		s = string(pw)
+	}
+	b, err := hex.DecodeString(s)
+	if err != nil || len(b) != 8 {
+		log.Fatal("Seed must be 16 hex characters")
+	}
+	var entropy [32]byte
+	copy(entropy[:], b)
+	return wallet.NewSeedFromEntropy(&entropy)
+}
+
+func initTestnetClient(addr string, network string, seed wallet.Seed) *api.Client {
+	if network == "mainnet" {
+		log.Fatal("Testnet actions cannot be used on mainnet")
+	}
+	c := api.NewClient("http://"+addr+"/api", getAPIPassword())
+	cs, err := c.ConsensusTipState()
+	check("Couldn't connect to API:", err)
+	if cs.Network.Name != network {
+		log.Fatalf("Testnet %q was specified, but walletd is running %v", network, cs.Network.Name)
+	}
+	ourAddr := types.StandardUnlockHash(seed.PublicKey(0))
+	wc := c.Wallet("primary")
+	if addrs, err := wc.Addresses(); err == nil && len(addrs) > 0 {
+		if _, ok := addrs[ourAddr]; !ok {
+			log.Fatal("Wallet already initialized with a different testnet address")
+		}
+	}
+	if ws, _ := c.Wallets(); len(ws) == 0 {
+		fmt.Print("Initializing testnet wallet...")
+		if err := c.AddWallet("primary", nil); err != nil {
+			fmt.Println()
+			log.Fatal(err)
+		} else if err := wc.AddAddress(ourAddr, nil); err != nil {
+			fmt.Println()
+			log.Fatal(err)
+		} else if err := wc.Subscribe(0); err != nil {
+			fmt.Println()
+			log.Fatal(err)
+		}
+		fmt.Println("done.")
+	}
+	return c
+}
+
 func mineBlock(cs consensus.State, b *types.Block) (hashes int, found bool) {
 	buf := make([]byte, 32+8+8+32)
 	binary.LittleEndian.PutUint64(buf[32:], b.Nonce)
@@ -89,13 +195,16 @@ func mineBlock(cs consensus.State, b *types.Block) (hashes int, found bool) {
 	return hashes, true
 }
 
-func runTestnetMiner(c *api.Client, minerAddr types.Address, n int) {
+func runTestnetMiner(c *api.Client, seed wallet.Seed, blocksToMine int) {
+	minerAddr := types.StandardUnlockHash(seed.PublicKey(0))
+
 	log.Println("Started mining into", minerAddr)
 	start := time.Now()
 
 	var hashes float64
 	var blocks uint64
 	var last types.ChainIndex
+	minedCount := 0
 outer:
 	for i := 0; ; i++ {
 		if n <= 0 && i >= n {
@@ -151,9 +260,14 @@ outer:
 		} else if err := c.SyncerBroadcastBlock(b); err != nil {
 			fmt.Printf("\nMined invalid block: %v\n", err)
 		} else if b.V2 == nil {
+			minedCount += 1
 			fmt.Printf("\nFound v1 block %v\n", index)
 		} else {
+			minedCount += 1
 			fmt.Printf("\nFound v2 block %v\n", index)
+		}
+		if blocksToMine != 0 && minedCount > blocksToMine {
+			break outer
 		}
 	}
 }

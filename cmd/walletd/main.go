@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strconv"
 	"strings"
 
 	"go.sia.tech/core/types"
@@ -90,7 +91,7 @@ Prints the version of the walletd binary.
 Generates a secure testnet seed.
 `
 	mineUsage = `Usage:
-    walletd mine
+    walletd mine [blocks]
 
 Runs a testnet CPU miner.
 `
@@ -230,10 +231,24 @@ func main() {
 		fmt.Printf("Address: %v\n", strings.TrimPrefix(addr.String(), "addr:"))
 
 	case mineCmd:
-		if len(cmd.Args()) != 0 {
+		if len(cmd.Args()) > 1 {
 			cmd.Usage()
 			return
 		}
+		seed := loadTestnetSeed(seed)
+		c := initTestnetClient(apiAddr, network, seed)
+
+		var n int
+		var err error
+
+		if len(cmd.Args()) > 0 {
+			n, err = strconv.Atoi(cmd.Arg(0))
+			if err != nil {
+				check("failed to parse blocks parameter as int:", err)
+			}
+		}
+
+		runTestnetMiner(c, seed, n)
 
 		minerAddr, err := types.ParseAddress(minerAddrStr)
 		if err != nil {
