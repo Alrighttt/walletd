@@ -2,19 +2,14 @@ package main
 
 import (
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"math/big"
-	"os"
-	"reflect"
 	"time"
 
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
 	"go.sia.tech/walletd/api"
-	"go.sia.tech/walletd/wallet"
-	"golang.org/x/term"
 	"lukechampine.com/frand"
 )
 
@@ -202,6 +197,7 @@ func mineBlock(cs consensus.State, b *types.Block) (hashes int, found bool) {
 
 func runTestnetMiner(c *api.Client, seed wallet.Seed, blocksToMine int) {
 	minerAddr := types.StandardUnlockHash(seed.PublicKey(0))
+
 	log.Println("Started mining into", minerAddr)
 	start := time.Now()
 
@@ -210,7 +206,10 @@ func runTestnetMiner(c *api.Client, seed wallet.Seed, blocksToMine int) {
 	var last types.ChainIndex
 	minedCount := 0
 outer:
-	for {
+	for i := 0; ; i++ {
+		if n <= 0 && i >= n {
+			return
+		}
 		elapsed := time.Since(start)
 		cs, err := c.ConsensusTipState()
 		check("Couldn't get consensus tip state:", err)
@@ -269,197 +268,6 @@ outer:
 		}
 		if blocksToMine != 0 && minedCount > blocksToMine {
 			break outer
-		}
-	}
-}
-
-func sendTestnet(c *api.Client, seed wallet.Seed, amount types.Currency, dest types.Address, v2 bool) {
-	ourKey := seed.PrivateKey(0)
-	ourUC := types.StandardUnlockConditions(seed.PublicKey(0))
-	ourAddr := types.StandardUnlockHash(seed.PublicKey(0))
-
-	cs, err := c.ConsensusTipState()
-	check("Couldn't get consensus tip state:", err)
-	utxos, _, err := c.Wallet("primary").Outputs()
-	check("Couldn't get outputs:", err)
-	txns, v2txns, err := c.TxpoolTransactions()
-	if err != nil {
-		log.Fatal(err)
-	}
-	inPool := make(map[types.Hash256]bool)
-	for _, ptxn := range txns {
-		for _, in := range ptxn.SiacoinInputs {
-			inPool[types.Hash256(in.ParentID)] = true
-		}
-	}
-	for _, ptxn := range v2txns {
-		for _, in := range ptxn.SiacoinInputs {
-			inPool[in.Parent.ID] = true
-		}
-	}
-
-	frand.Shuffle(len(utxos), reflect.Swapper(utxos))
-	var inputSum types.Currency
-	rem := utxos[:0]
-	for _, utxo := range utxos {
-		if inputSum.Cmp(amount) >= 0 {
-			break
-		} else if cs.Index.Height > utxo.MaturityHeight && !inPool[utxo.ID] {
-			rem = append(rem, utxo)
-			inputSum = inputSum.Add(utxo.SiacoinOutput.Value)
-		}
-	}
-	utxos = rem
-	if inputSum.Cmp(amount) < 0 {
-		log.Fatal("Insufficient balance")
-	}
-	outputs := []types.SiacoinOutput{
-		{Address: dest, Value: amount},
-	}
-	minerFee := inputSum.Sub(amount)
-	if maxFee := types.Siacoins(1); minerFee.Cmp(maxFee) > 0 {
-		minerFee = maxFee
-	}
-	if change := inputSum.Sub(amount.Add(minerFee)); !change.IsZero() {
-		outputs = append(outputs, types.SiacoinOutput{
-			Address: ourAddr,
-			Value:   change,
-		})
-	}
-
-	if v2 {
-		txn := types.V2Transaction{
-			SiacoinInputs:  make([]types.V2SiacoinInput, len(utxos)),
-			SiacoinOutputs: outputs,
-			MinerFee:       minerFee,
-		}
-		for i, sce := range utxos {
-			txn.SiacoinInputs[i].Parent = sce
-			txn.SiacoinInputs[i].SatisfiedPolicy.Policy = types.SpendPolicy{
-				Type: types.PolicyTypeUnlockConditions(ourUC),
-			}
-		}
-		sigHash := cs.InputSigHash(txn)
-		for i := range utxos {
-			txn.SiacoinInputs[i].SatisfiedPolicy.Signatures = []types.Signature{ourKey.SignHash(sigHash)}
-		}
-		if err := c.TxpoolBroadcast(nil, []types.V2Transaction{txn}); err != nil {
-			log.Fatal(err)
-		}
-		log.Println("Broadcast", txn.ID(), "successfully")
-	} else {
-		txn := types.Transaction{
-			SiacoinInputs:  make([]types.SiacoinInput, len(utxos)),
-			SiacoinOutputs: outputs,
-			Signatures:     make([]types.TransactionSignature, len(utxos)),
-		}
-		if !minerFee.IsZero() {
-			txn.MinerFees = append(txn.MinerFees, minerFee)
-		}
-		for i, sce := range utxos {
-			txn.SiacoinInputs[i] = types.SiacoinInput{
-				ParentID:         types.SiacoinOutputID(sce.ID),
-				UnlockConditions: ourUC,
-			}
-		}
-		cs, _ := c.ConsensusTipState()
-		for i, sce := range utxos {
-			txn.Signatures[i] = wallet.StandardTransactionSignature(sce.ID)
-			wallet.SignTransaction(cs, &txn, i, ourKey)
-		}
-		if err := c.TxpoolBroadcast([]types.Transaction{txn}, nil); err != nil {
-			log.Fatal(err)
-		}
-		log.Println("Broadcast", txn.ID(), "successfully")
-	}
-}
-
-func printTestnetEvents(c *api.Client, seed wallet.Seed) {
-	ourAddr := types.StandardUnlockHash(seed.PublicKey(0))
-	events, err := c.Wallet("primary").Events(0, -1)
-	check("Couldn't get events:", err)
-	for i := range events {
-		e := events[len(events)-1-i]
-		switch t := e.Val.(type) {
-		case *wallet.EventTransaction:
-			if len(t.SiacoinInputs) == 0 || len(t.SiacoinOutputs) == 0 {
-				continue
-			}
-			sci := t.SiacoinInputs[0].SiacoinOutput
-			sco := t.SiacoinOutputs[0].SiacoinOutput
-			if sci.Address == ourAddr {
-				fmt.Printf("%14v (%v): Sent %v (+ %v fee) to %v\n", e.Index, e.Timestamp.Format("Jan _2 @ 15:04:05"), sco.Value, t.Fee, sco.Address)
-			} else {
-				fmt.Printf("%14v (%v): Received %v from %v\n", e.Index, e.Timestamp.Format("Jan _2 @ 15:04:05"), sco.Value, sci.Address)
-			}
-		case *wallet.EventMinerPayout:
-			sco := t.SiacoinOutput.SiacoinOutput
-			fmt.Printf("%14v (%v): Earned %v miner payout from block %v\n", e.Index, e.Timestamp.Format("Jan _2 @ 15:04:05"), sco.Value, e.Index)
-		}
-	}
-}
-
-func testnetTxpoolBalance(c *api.Client, seed wallet.Seed) (gained, lost types.Currency) {
-	ourAddr := types.StandardUnlockHash(seed.PublicKey(0))
-	txns, v2txns, err := c.TxpoolTransactions()
-	check("Couldn't get txpool transactions:", err)
-	for _, txn := range txns {
-		if len(txn.SiacoinInputs) == 0 || len(txn.SiacoinOutputs) == 0 {
-			continue
-		}
-		sco := txn.SiacoinOutputs[0]
-		if txn.SiacoinInputs[0].UnlockConditions.UnlockHash() == ourAddr {
-			lost = lost.Add(sco.Value).Add(txn.TotalFees())
-		} else if sco.Address == ourAddr {
-			gained = gained.Add(sco.Value)
-		}
-	}
-	for _, txn := range v2txns {
-		if len(txn.SiacoinInputs) == 0 || len(txn.SiacoinOutputs) == 0 {
-			continue
-		}
-		sco := txn.SiacoinOutputs[0]
-		if txn.SiacoinInputs[0].Parent.SiacoinOutput.Address == ourAddr {
-			lost = lost.Add(sco.Value).Add(txn.MinerFee)
-		} else if sco.Address == ourAddr {
-			gained = gained.Add(sco.Value)
-		}
-	}
-	return
-}
-
-func printTestnetTxpool(c *api.Client, seed wallet.Seed) {
-	ourAddr := types.StandardUnlockHash(seed.PublicKey(0))
-	txns, v2txns, err := c.TxpoolTransactions()
-	check("Couldn't get txpool transactions:", err)
-	if len(txns) == 0 && len(v2txns) == 0 {
-		fmt.Println("No transactions in txpool.")
-		return
-	}
-	for _, txn := range txns {
-		if len(txn.SiacoinInputs) == 0 || len(txn.SiacoinOutputs) == 0 {
-			continue
-		}
-		id := txn.ID()
-		sci := txn.SiacoinInputs[0]
-		sco := txn.SiacoinOutputs[0]
-		if sci.UnlockConditions.UnlockHash() == ourAddr {
-			fmt.Printf("%x (v1): Sending %v (+ %v fee) to %v\n", id[:4], sco.Value, txn.TotalFees(), sco.Address)
-		} else if sco.Address == ourAddr {
-			fmt.Printf("%x (v1): Receiving %v from %v\n", id[:4], sco.Value, sci.UnlockConditions.UnlockHash())
-		}
-	}
-	for _, txn := range v2txns {
-		if len(txn.SiacoinInputs) == 0 || len(txn.SiacoinOutputs) == 0 {
-			continue
-		}
-		id := txn.ID()
-		sci := txn.SiacoinInputs[0].Parent.SiacoinOutput
-		sco := txn.SiacoinOutputs[0]
-		if sci.Address == ourAddr {
-			fmt.Printf("%x (v2): Sending %v (+ %v fee) to %v\n", id[:4], sco.Value, txn.MinerFee, sco.Address)
-		} else if sco.Address == ourAddr {
-			fmt.Printf("%x (v2): Receiving %v from %v\n", id[:4], sco.Value, sci.Address)
 		}
 	}
 }

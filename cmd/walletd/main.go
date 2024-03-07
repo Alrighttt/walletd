@@ -11,7 +11,10 @@ import (
 	"strings"
 
 	"go.sia.tech/core/types"
+	"go.sia.tech/walletd/api"
 	"go.sia.tech/walletd/wallet"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"golang.org/x/term"
 	"lukechampine.com/flagg"
 	"lukechampine.com/frand"
@@ -121,6 +124,9 @@ func main() {
 	var gatewayAddr, apiAddr, dir, network, seed string
 	var upnp, v2 bool
 
+	var minerAddrStr string
+	var minerBlocks int
+
 	rootCmd := flagg.Root
 	rootCmd.Usage = flagg.SimpleUsage(rootCmd, rootUsage)
 	rootCmd.StringVar(&gatewayAddr, "addr", ":9981", "p2p address to listen on")
@@ -132,6 +138,8 @@ func main() {
 	versionCmd := flagg.New("version", versionUsage)
 	seedCmd := flagg.New("seed", seedUsage)
 	mineCmd := flagg.New("mine", mineUsage)
+	mineCmd.IntVar(&minerBlocks, "n", -1, "mine this many blocks. If negative, mine indefinitely")
+	mineCmd.StringVar(&minerAddrStr, "addr", "", "address to send block rewards to (required)")
 	balanceCmd := flagg.New("balance", balanceUsage)
 	sendCmd := flagg.New("send", sendUsage)
 	sendCmd.BoolVar(&v2, "v2", false, "send a v2 transaction")
@@ -158,12 +166,37 @@ func main() {
 			cmd.Usage()
 			return
 		}
+
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			log.Fatal(err)
+		}
+
 		apiPassword := getAPIPassword()
 		l, err := net.Listen("tcp", apiAddr)
 		if err != nil {
 			log.Fatal(err)
 		}
-		n, err := newNode(gatewayAddr, dir, network, upnp)
+
+		// configure console logging note: this is configured before anything else
+		// to have consistent logging. File logging will be added after the cli
+		// flags and config is parsed
+		consoleCfg := zap.NewProductionEncoderConfig()
+		consoleCfg.TimeKey = "" // prevent duplicate timestamps
+		consoleCfg.EncodeTime = zapcore.RFC3339TimeEncoder
+		consoleCfg.EncodeDuration = zapcore.StringDurationEncoder
+		consoleCfg.EncodeLevel = zapcore.CapitalColorLevelEncoder
+		consoleCfg.StacktraceKey = ""
+		consoleCfg.CallerKey = ""
+		consoleEncoder := zapcore.NewConsoleEncoder(consoleCfg)
+
+		// only log info messages to console unless stdout logging is enabled
+		consoleCore := zapcore.NewCore(consoleEncoder, zapcore.Lock(os.Stdout), zap.NewAtomicLevelAt(zap.DebugLevel))
+		logger := zap.New(consoleCore, zap.AddCaller())
+		defer logger.Sync()
+		// redirect stdlib log to zap
+		zap.RedirectStdLog(logger.Named("stdlib"))
+
+		n, err := newNode(gatewayAddr, dir, network, upnp, logger)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -217,58 +250,12 @@ func main() {
 
 		runTestnetMiner(c, seed, n)
 
-	case balanceCmd:
-		if len(cmd.Args()) != 0 {
-			cmd.Usage()
-			return
+		minerAddr, err := types.ParseAddress(minerAddrStr)
+		if err != nil {
+			log.Fatal(err)
 		}
-		seed := loadTestnetSeed(seed)
-		c := initTestnetClient(apiAddr, network, seed)
-		b, err := c.Wallet("primary").Balance()
-		check("Couldn't get balance:", err)
-		out := fmt.Sprint(b.Siacoins)
-		if !b.ImmatureSiacoins.IsZero() {
-			out += fmt.Sprintf(" + %v immature", b.ImmatureSiacoins)
-		}
-		poolGained, poolLost := testnetTxpoolBalance(c, seed)
-		if !poolGained.IsZero() || !poolLost.IsZero() {
-			if poolGained.Cmp(poolLost) >= 0 {
-				out += fmt.Sprintf(" + %v unconfirmed", poolGained.Sub(poolLost))
-			} else {
-				out += fmt.Sprintf(" - %v unconfirmed", poolLost.Sub(poolGained))
-			}
-		}
-		fmt.Println(out)
 
-	case sendCmd:
-		if len(cmd.Args()) != 2 {
-			cmd.Usage()
-			return
-		}
-		seed := loadTestnetSeed(seed)
-		c := initTestnetClient(apiAddr, network, seed)
-		amount, err := types.ParseCurrency(cmd.Arg(0))
-		check("Couldn't parse amount:", err)
-		dest, err := types.ParseAddress(cmd.Arg(1))
-		check("Couldn't parse recipient address:", err)
-		sendTestnet(c, seed, amount, dest, v2)
-
-	case txnsCmd:
-		if len(cmd.Args()) != 0 {
-			cmd.Usage()
-			return
-		}
-		seed := loadTestnetSeed(seed)
-		c := initTestnetClient(apiAddr, network, seed)
-		printTestnetEvents(c, seed)
-
-	case txpoolCmd:
-		if len(cmd.Args()) != 0 {
-			cmd.Usage()
-			return
-		}
-		seed := loadTestnetSeed(seed)
-		c := initTestnetClient(apiAddr, network, seed)
-		printTestnetTxpool(c, seed)
+		c := api.NewClient("http://"+apiAddr+"/api", getAPIPassword())
+		runTestnetMiner(c, minerAddr, minerBlocks)
 	}
 }
