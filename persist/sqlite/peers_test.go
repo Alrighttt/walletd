@@ -20,13 +20,15 @@ func TestAddPeer(t *testing.T) {
 
 	const peer = "1.2.3.4:9981"
 
-	db.AddPeer(peer)
+	if err := db.AddPeer(peer); err != nil {
+		t.Fatal(err)
+	}
 
-	lastConnect := time.Now().Truncate(time.Second) // stored as unix milliseconds
+	lastConnect := time.Now().UTC().Truncate(time.Second) // stored as unix milliseconds
 	syncedBlocks := uint64(15)
 	syncDuration := 5 * time.Second
 
-	db.UpdatePeerInfo(peer, func(info *syncer.PeerInfo) {
+	err = db.UpdatePeerInfo(peer, func(info *syncer.PeerInfo) {
 		info.LastConnect = lastConnect
 		info.SyncedBlocks = syncedBlocks
 		info.SyncDuration = syncDuration
@@ -35,9 +37,9 @@ func TestAddPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	info, ok := db.PeerInfo(peer)
-	if !ok {
-		t.Fatal("expected peer to be in database")
+	info, err := db.PeerInfo(peer)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	if !info.LastConnect.Equal(lastConnect) {
@@ -48,6 +50,23 @@ func TestAddPeer(t *testing.T) {
 	}
 	if info.SyncDuration != 5*time.Second {
 		t.Errorf("expected SyncDuration = %s; got %s", syncDuration, info.SyncDuration)
+	}
+
+	peers, err := db.Peers()
+	if err != nil {
+		t.Fatal(err)
+	} else if len(peers) != 1 {
+		t.Fatalf("expected 1 peer; got %d", len(peers))
+	} else if peerInfo := peers[0]; peerInfo.Address != peer {
+		t.Errorf("expected peer address = %q; got %q", peer, peerInfo.Address)
+	} else if peerInfo.LastConnect != lastConnect {
+		t.Errorf("expected LastConnect = %v; got %v", lastConnect, peerInfo.LastConnect)
+	} else if peerInfo.SyncedBlocks != syncedBlocks {
+		t.Errorf("expected SyncedBlocks = %d; got %d", syncedBlocks, peerInfo.SyncedBlocks)
+	} else if peerInfo.SyncDuration != syncDuration {
+		t.Errorf("expected SyncDuration = %s; got %s", syncDuration, peerInfo.SyncDuration)
+	} else if peerInfo.FirstSeen.IsZero() {
+		t.Errorf("expected FirstSeen to be non-zero; got %v", peerInfo.FirstSeen)
 	}
 }
 
@@ -61,22 +80,22 @@ func TestBanPeer(t *testing.T) {
 
 	const peer = "1.2.3.4"
 
-	if db.Banned(peer) {
-		t.Fatal("expected peer to not be banned")
+	if banned, err := db.Banned(peer); err != nil || banned {
+		t.Fatal("expected peer to not be banned", err)
 	}
 
 	// ban the peer
 	db.Ban(peer, time.Second, "test")
 
-	if !db.Banned(peer) {
-		t.Fatal("expected peer to be banned")
+	if banned, err := db.Banned(peer); err != nil || !banned {
+		t.Fatal("expected peer to be banned", err)
 	}
 
 	// wait for the ban to expire
 	time.Sleep(time.Second)
 
-	if db.Banned(peer) {
-		t.Fatal("expected peer to not be banned")
+	if banned, err := db.Banned(peer); err != nil || banned {
+		t.Fatal("expected peer to not be banned", err)
 	}
 
 	// ban a subnet
@@ -87,7 +106,7 @@ func TestBanPeer(t *testing.T) {
 
 	t.Log("banning", subnet)
 	db.Ban(subnet.String(), time.Second, "test")
-	if !db.Banned(peer) {
-		t.Fatal("expected peer to be banned")
+	if banned, err := db.Banned(peer); err != nil || !banned {
+		t.Fatal("expected peer to be banned", err)
 	}
 }

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"reflect"
@@ -34,8 +35,8 @@ type (
 	Syncer interface {
 		Addr() string
 		Peers() []*syncer.Peer
-		PeerInfo(peer string) (syncer.PeerInfo, bool)
-		Connect(addr string) (*syncer.Peer, error)
+		PeerInfo(addr string) (syncer.PeerInfo, error)
+		Connect(ctx context.Context, addr string) (*syncer.Peer, error)
 		BroadcastHeader(bh gateway.BlockHeader)
 		BroadcastTransactionSet(txns []types.Transaction)
 		BroadcastV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction)
@@ -59,6 +60,11 @@ type (
 		UnspentSiafundOutputs(id wallet.ID, offset, limit int) ([]types.SiafundElement, error)
 		WalletBalance(id wallet.ID) (wallet.Balance, error)
 		Annotate(id wallet.ID, pool []types.Transaction) ([]wallet.PoolTransaction, error)
+
+		AddressBalance(address types.Address) (balance wallet.Balance, err error)
+		AddressEvents(address types.Address, offset, limit int) (events []wallet.Event, err error)
+		AddressSiacoinOutputs(address types.Address, offset, limit int) (siacoins []types.SiacoinElement, err error)
+		AddressSiafundOutputs(address types.Address, offset, limit int) (siafunds []types.SiafundElement, err error)
 
 		Reserve(ids []types.Hash256, duration time.Duration) error
 	}
@@ -89,21 +95,24 @@ func (s *server) consensusTipStateHandler(jc jape.Context) {
 func (s *server) syncerPeersHandler(jc jape.Context) {
 	var peers []GatewayPeer
 	for _, p := range s.s.Peers() {
-		info, ok := s.s.PeerInfo(p.Addr())
-		if !ok {
-			jc.Error(errors.New("peer not found"), http.StatusNotFound)
-			return
-		}
-		peers = append(peers, GatewayPeer{
+		// create peer response with known fields
+		peer := GatewayPeer{
 			Addr:    p.Addr(),
 			Inbound: p.Inbound,
 			Version: p.Version(),
-
-			FirstSeen:      info.FirstSeen,
-			ConnectedSince: info.LastConnect,
-			SyncedBlocks:   info.SyncedBlocks,
-			SyncDuration:   info.SyncDuration,
-		})
+		}
+		//  add more info if available
+		info, err := s.s.PeerInfo(p.Addr())
+		if err != nil && !errors.Is(err, syncer.ErrPeerNotFound) {
+			jc.Error(err, http.StatusInternalServerError)
+			return
+		} else if err == nil {
+			peer.FirstSeen = info.FirstSeen
+			peer.ConnectedSince = info.LastConnect
+			peer.SyncedBlocks = info.SyncedBlocks
+			peer.SyncDuration = info.SyncDuration
+		}
+		peers = append(peers, peer)
 	}
 	jc.Encode(peers)
 }
@@ -113,7 +122,7 @@ func (s *server) syncerConnectHandler(jc jape.Context) {
 	if jc.Decode(&addr) != nil {
 		return
 	}
-	_, err := s.s.Connect(addr)
+	_, err := s.s.Connect(jc.Request.Context(), addr)
 	jc.Check("couldn't connect to peer", err)
 }
 
@@ -544,6 +553,72 @@ func (s *server) walletsFundSFHandler(jc jape.Context) {
 	})
 }
 
+func (s *server) addressesAddrBalanceHandler(jc jape.Context) {
+	var addr types.Address
+	if jc.DecodeParam("addr", &addr) != nil {
+		return
+	}
+	b, err := s.wm.AddressBalance(addr)
+	if jc.Check("couldn't load balance", err) != nil {
+		return
+	}
+	jc.Encode(BalanceResponse(b))
+}
+
+func (s *server) addressesAddrEventsHandler(jc jape.Context) {
+	var addr types.Address
+	if jc.DecodeParam("addr", &addr) != nil {
+		return
+	}
+
+	offset, limit := 0, 1000
+	if jc.DecodeForm("offset", &offset) != nil || jc.DecodeForm("limit", &limit) != nil {
+		return
+	}
+
+	events, err := s.wm.AddressEvents(addr, offset, limit)
+	if jc.Check("couldn't load events", err) != nil {
+		return
+	}
+	jc.Encode(events)
+}
+
+func (s *server) addressesAddrOutputsSCHandler(jc jape.Context) {
+	var addr types.Address
+	if jc.DecodeParam("addr", &addr) != nil {
+		return
+	}
+
+	offset, limit := 0, 1000
+	if jc.DecodeForm("offset", &offset) != nil || jc.DecodeForm("limit", &limit) != nil {
+		return
+	}
+
+	utxos, err := s.wm.AddressSiacoinOutputs(addr, offset, limit)
+	if jc.Check("couldn't load utxos", err) != nil {
+		return
+	}
+	jc.Encode(utxos)
+}
+
+func (s *server) addressesAddrOutputsSFHandler(jc jape.Context) {
+	var addr types.Address
+	if jc.DecodeParam("addr", &addr) != nil {
+		return
+	}
+
+	offset, limit := 0, 1000
+	if jc.DecodeForm("offset", &offset) != nil || jc.DecodeForm("limit", &limit) != nil {
+		return
+	}
+
+	utxos, err := s.wm.AddressSiafundOutputs(addr, offset, limit)
+	if jc.Check("couldn't load utxos", err) != nil {
+		return
+	}
+	jc.Encode(utxos)
+}
+
 // NewServer returns an HTTP handler that serves the walletd API.
 func NewServer(cm ChainManager, s Syncer, wm WalletManager) http.Handler {
 	srv := server{
@@ -583,5 +658,10 @@ func NewServer(cm ChainManager, s Syncer, wm WalletManager) http.Handler {
 		"POST   /wallets/:id/release":         srv.walletsReleaseHandler,
 		"POST   /wallets/:id/fund":            srv.walletsFundHandler,
 		"POST   /wallets/:id/fundsf":          srv.walletsFundSFHandler,
+
+		"GET /addresses/:addr/balance":         srv.addressesAddrBalanceHandler,
+		"GET /addresses/:addr/events":          srv.addressesAddrEventsHandler,
+		"GET /addresses/:addr/outputs/siacoin": srv.addressesAddrOutputsSCHandler,
+		"GET /addresses/:addr/outputs/siafund": srv.addressesAddrOutputsSFHandler,
 	})
 }
